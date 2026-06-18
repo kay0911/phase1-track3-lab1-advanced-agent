@@ -15,25 +15,43 @@ class BaseAgent:
         final_answer = ""
         final_score = 0
         for attempt_id in range(1, self.max_attempts + 1):
+            from .mock_runtime import METRICS, reset_metrics
+            reset_metrics()
+            
             answer = actor_answer(example, attempt_id, self.agent_type, reflection_memory)
             judge = evaluator(example, answer)
-            # TODO: Replace with actual token count from LLM response
-            token_estimate = 320 + (attempt_id * 65) + (120 if self.agent_type == "reflexion" else 0)
-            # TODO: Replace with actual latency measurement
-            latency_ms = 160 + (attempt_id * 40) + (90 if self.agent_type == "reflexion" else 0)
-            trace = AttemptTrace(attempt_id=attempt_id, answer=answer, score=judge.score, reason=judge.reason, token_estimate=token_estimate, latency_ms=latency_ms)
+            
+            ref = None
+            if self.agent_type == "reflexion" and judge.score == 0 and attempt_id < self.max_attempts:
+                ref = reflector(example, attempt_id, judge)
+                reflections.append(ref)
+                reflection_memory.append(
+                    f"Attempt {attempt_id} failed because: {ref.failure_reason}. "
+                    f"Lesson learned: {ref.lesson}. "
+                    f"Strategy for next attempt: {ref.next_strategy}"
+                )
+            
+            if METRICS["tokens"] > 0:
+                token_estimate = METRICS["tokens"]
+                latency_ms = METRICS["latency_ms"]
+            else:
+                token_estimate = 320 + (attempt_id * 65) + (120 if self.agent_type == "reflexion" else 0)
+                latency_ms = 160 + (attempt_id * 40) + (90 if self.agent_type == "reflexion" else 0)
+                
+            trace = AttemptTrace(
+                attempt_id=attempt_id,
+                answer=answer,
+                score=judge.score,
+                reason=judge.reason,
+                reflection=ref,
+                token_estimate=token_estimate,
+                latency_ms=latency_ms
+            )
             final_answer = answer
             final_score = judge.score
-            if judge.score == 1:
-                traces.append(trace)
-                break
-            
-            # TODO: Học viên triển khai logic Reflexion tại đây
-            # 1. Kiểm tra nếu agent_type là 'reflexion' và chưa hết số lần attempt
-            # 2. Gọi hàm reflector để lấy nội dung reflection
-            # 3. Cập nhật reflection_memory để Actor dùng cho lần sau
-            pass
             traces.append(trace)
+            if judge.score == 1:
+                break
         total_tokens = sum(t.token_estimate for t in traces)
         total_latency = sum(t.latency_ms for t in traces)
         failure_mode = "none" if final_score == 1 else FAILURE_MODE_BY_QID.get(example.qid, "wrong_final_answer")
